@@ -17,7 +17,7 @@ SCHEMA_PATH = "schemas/order.avsc"
 GROUP_ID = "order-consumer-group"
 MAX_RETRIES = 3
 BACKOFF_SECONDS = 0.5
-TRANSIENT_FAILURE_RATE = 0.2
+TRANSIENT_FAILURE_RATE = 0.5
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("consumer")
@@ -27,6 +27,13 @@ def simulate_downstream_call(order: dict) -> dict:
     if random.random() < TRANSIENT_FAILURE_RATE:
         raise TransientError(f"downstream hiccup processing {order['orderId']}")
     return order
+
+
+def dlq_delivery_report(err, msg):
+    if err is not None:
+        logger.error("DLQ delivery failed for key=%s: %s", msg.key(), err)
+    else:
+        logger.info("DLQ delivery confirmed for key=%s [partition %d]", msg.key(), msg.partition())
 
 
 def send_to_dlq(producer, avro_serializer, order, reason, retry_count):
@@ -39,8 +46,15 @@ def send_to_dlq(producer, avro_serializer, order, reason, retry_count):
         key=order.get("orderId", ""),
         value=avro_serializer(order, SerializationContext(TOPIC_DLQ, MessageField.VALUE)),
         headers=headers,
+        on_delivery=dlq_delivery_report,
     )
-    producer.flush(10)
+    remaining = producer.flush(10)
+    if remaining > 0:
+        logger.error(
+            "DLQ delivery unconfirmed for order %s after flush timeout", order.get("orderId")
+        )
+        return False
+    return True
 
 
 def main():
@@ -71,37 +85,46 @@ def main():
                 logger.error("Consumer error: %s", msg.error())
                 continue
 
-            order = avro_deserializer(
-                msg.value(), SerializationContext(msg.topic(), MessageField.VALUE)
-            )
+            try:
+                order = avro_deserializer(
+                    msg.value(), SerializationContext(msg.topic(), MessageField.VALUE)
+                )
 
-            reason = validate_order(order)
-            if reason is not None:
-                logger.warning("Validation failed (%s) for %s -> DLQ", reason, order)
-                send_to_dlq(dlq_producer, avro_serializer, order, reason, retry_count=0)
+                reason = validate_order(order)
+                if reason is not None:
+                    logger.warning("Validation failed (%s) for %s -> DLQ", reason, order)
+                    send_to_dlq(dlq_producer, avro_serializer, order, reason, retry_count=0)
+                    consumer.commit(msg)
+                    continue
+
+                success, attempts, _ = process_with_retry(
+                    lambda: simulate_downstream_call(order),
+                    max_retries=MAX_RETRIES,
+                    backoff_seconds=BACKOFF_SECONDS,
+                )
+
+                if success:
+                    stats.update(order["price"])
+                    logger.info(
+                        "[AGG] count=%d avg=%.2f (order=%s, attempts=%d)",
+                        stats.count, stats.average, order["orderId"], attempts,
+                    )
+                else:
+                    logger.warning(
+                        "Max retries exceeded for %s after %d attempts -> DLQ",
+                        order["orderId"], attempts,
+                    )
+                    send_to_dlq(dlq_producer, avro_serializer, order, ERROR_MAX_RETRIES, attempts)
+
+                consumer.commit(msg)
+            except Exception:
+                logger.exception(
+                    "Unrecoverable error processing message at offset %s on partition %s "
+                    "(likely undeserializable) -> committing offset and skipping",
+                    msg.offset(), msg.partition(),
+                )
                 consumer.commit(msg)
                 continue
-
-            success, attempts, _ = process_with_retry(
-                lambda: simulate_downstream_call(order),
-                max_retries=MAX_RETRIES,
-                backoff_seconds=BACKOFF_SECONDS,
-            )
-
-            if success:
-                stats.update(order["price"])
-                logger.info(
-                    "[AGG] count=%d avg=%.2f (order=%s, attempts=%d)",
-                    stats.count, stats.average, order["orderId"], attempts,
-                )
-            else:
-                logger.warning(
-                    "Max retries exceeded for %s after %d attempts -> DLQ",
-                    order["orderId"], attempts,
-                )
-                send_to_dlq(dlq_producer, avro_serializer, order, ERROR_MAX_RETRIES, attempts)
-
-            consumer.commit(msg)
     except KeyboardInterrupt:
         logger.info("Shutting down consumer")
     finally:

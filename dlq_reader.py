@@ -26,6 +26,7 @@ def main():
         "bootstrap.servers": BOOTSTRAP_SERVERS,
         "group.id": "dlq-reader-group",
         "auto.offset.reset": "earliest",
+        "enable.auto.commit": False,
     })
     consumer.subscribe([TOPIC_DLQ])
 

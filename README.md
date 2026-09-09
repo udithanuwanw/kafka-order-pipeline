@@ -48,7 +48,7 @@ Watch Terminal 1: you'll see a running average print after every
 successfully processed order (`[AGG] count=... avg=...`), occasional
 `Validation failed (negative_price) ... -> DLQ` lines (producer intentionally
 emits ~10% invalid orders), and occasional `Max retries exceeded ... -> DLQ`
-lines (consumer simulates a ~20% transient failure rate per message, retried
+lines (consumer simulates a ~50% transient failure rate per message, retried
 3 times with backoff before giving up).
 
 **Terminal 3 — DLQ reader** (run any time after some DLQ messages exist):
