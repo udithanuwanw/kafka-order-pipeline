@@ -1,2 +1,2 @@
-confluent-kafka[avro]==2.5.3
+confluent-kafka[avro]==2.15.0
 pytest==8.3.2
