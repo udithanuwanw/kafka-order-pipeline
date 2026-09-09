@@ -40,7 +40,7 @@ def send_to_dlq(producer, avro_serializer, order, reason, retry_count):
         value=avro_serializer(order, SerializationContext(TOPIC_DLQ, MessageField.VALUE)),
         headers=headers,
     )
-    producer.poll(0)
+    producer.flush(10)
 
 
 def main():
