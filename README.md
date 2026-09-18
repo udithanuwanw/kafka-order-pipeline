@@ -5,8 +5,7 @@ with real-time running-average aggregation, retry logic for simulated
 transient failures, and a Dead Letter Queue (DLQ) for permanently failed
 messages.
 
-See [docs/superpowers/specs/2026-09-09-kafka-order-pipeline-design.md](docs/superpowers/specs/2026-09-09-kafka-order-pipeline-design.md)
-for the full design.
+
 
 ## Prerequisites
 
